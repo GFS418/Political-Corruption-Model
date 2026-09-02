@@ -1,5 +1,5 @@
 ---
-title: "Political Corruption Model"
+title: "Political Corruption Model (DML: PLR + IRM)"
 date: "2024-12-14"
 output: html_document
 ---
@@ -8,21 +8,15 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
-install.packages("glmnet")
-install.packages("caret")
-install.packages("dplyr")
-install.packages("nnet")
-install.packages("randomForest")
-install.packages("rpart")
-install.packages("doParallel")
-install.packages("foreach")
-install.packages("sandwich")
-install.packages("lmtest")
-install.packages("data.table")
-install.packages("ggplot2")
+```{r install, message=FALSE}
+# Install only what's missing (avoids reinstalling on every knit).
+pkgs <- c("glmnet", "caret", "dplyr", "nnet", "randomForest", "rpart",
+          "doParallel", "foreach", "sandwich", "lmtest", "data.table", "ggplot2")
+to_install <- setdiff(pkgs, rownames(installed.packages()))
+if (length(to_install)) install.packages(to_install)
 ```
-```{r}
+
+```{r libs, message=FALSE, warning=FALSE}
 library(glmnet)
 library(caret)
 library(dplyr)
@@ -37,452 +31,274 @@ library(data.table)
 library(ggplot2)
 ```
 
-```{r}
-# Load the dataset
-data <- read.csv("corruptiondata.csv")
+```{r data}
+data <- read.csv("/Users/graysonschultz/Downloads/corruptiondata.csv")
 
-# Construct the formula for the amount of corruption with possible confounders
-formula_val_corrupt_mayoral <- "valor_corrupt ~ first + pref_idade_tse + pref_escola"
+# ---- choose the analysis in ONE place -----------------------------------
+outcome    <- "ncorrupt_os"    # "ncorrupt_os", "pcorrupt", or "valor_corrupt"
+binarize   <- TRUE             # 1 = any corruption found, 0 = none
+spec       <- "mayoral_muni"   # which confounder set (see cov_sets below)
+treatment  <- "first"          # first-term mayor indicator
+# -------------------------------------------------------------------------
 
-formula_val_corrupt_mayoral_muni <- "valor_corrupt ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04"
-
-formula_val_corrupt_mayoral_muni_pol <- "valor_corrupt ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04 + p_cad_pref + ENLP2000"
-
-formula_val_corrupt_selected_cov <- "valor_corrupt ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04 + p_cad_pref + ENLP2000 + uf_d1 + uf_d2 + uf_d3 + uf_d4 + uf_d5 + uf_d6 + uf_d7 + uf_d8 + uf_d9 + uf_d10 + uf_d11 + uf_d12 + uf_d13 + uf_d14 + uf_d15 + uf_d16 + uf_d17 + uf_d18 + uf_d19 + uf_d20 + uf_d21 + uf_d22 + uf_d23 + uf_d24 + uf_d25 + uf_d26"
-
-formula_p_corrupt_mayoral <- "pcorrupt ~ first + pref_idade_tse + pref_escola"
-
-formula_p_corrupt_mayoral_muni <- "pcorrupt ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04"
-
-formula_p_corrupt_mayoral_muni_pol <- "pcorrupt ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04 + p_cad_pref + ENLP2000"
-
-formula_p_corrupt_selected_cov <- "pcorrupt ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04 + p_cad_pref + ENLP2000 + uf_d1 + uf_d2 + uf_d3 + uf_d4 + uf_d5 + uf_d6 + uf_d7 + uf_d8 + uf_d9 + uf_d10 + uf_d11 + uf_d12 + uf_d13 + uf_d14 + uf_d15 + uf_d16 + uf_d17 + uf_d18 + uf_d19 + uf_d20 + uf_d21 + uf_d22 + uf_d23 + uf_d24 + uf_d25 + uf_d26"
-
-formula_n_corrupt_mayoral <- "ncorrupt_os ~ first + pref_idade_tse + pref_escola"
-
-formula_n_corrupt_mayoral_muni <- "ncorrupt_os ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04"
-
-formula_n_corrupt_mayoral_muni_pol <- "ncorrupt_os ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04 + p_cad_pref + ENLP2000"
-
-formula_n_corrupt_selected_cov <- "ncorrupt_os ~ first + pref_idade_tse + pref_escola + mun_novo + p_secundario + purb + lpib02 + gini_ipea + op_01_04 + p_cad_pref + ENLP2000 + uf_d1 + uf_d2 + uf_d3 + uf_d4 + uf_d5 + uf_d6 + uf_d7 + uf_d8 + uf_d9 + uf_d10 + uf_d11 + uf_d12 + uf_d13 + uf_d14 + uf_d15 + uf_d16 + uf_d17 + uf_d18 + uf_d19 + uf_d20 + uf_d21 + uf_d22 + uf_d23 + uf_d24 + uf_d25 + uf_d26"
-
-
-# To analyze each data set, change the formula in formula_used below
-formula_used <- as.formula(formula_n_corrupt_mayoral_muni)
-
-# Also, please change the following variables to corresponding outcome (ncorrupt_os by default)
-# Line 126: fill = as.factor(ncorrupt_os)
-# Line 132: fill = "Treatment (ncorrupt_os)"
-# Line 409, 458: y_col = "ncorrupt_os",
-
-model_val <- model.frame(formula_used, data)
-model_val <- as.data.frame(model_val)
-
-model_val[] <- lapply(model_val, function(col) {
-  if (is.numeric(col)) {
-    col[is.na(col)] <- mean(col, na.rm = TRUE)
-    return(col)
-  } else {
-    return(col)
-  }
-})
-
-# Remove 'instrument' column if it exists
-if ("instrument" %in% names(model_val)) {
-  model_val <- model_val[, !"instrument", with = FALSE]
-}
-
-# Extract covariate names (excluding the first two columns: outcome and treatment)
-x_val <- colnames(model_val)[-c(1, 2)]
-```
-
-```{r}
-# Change the corruption measure to either ncorrupt_os, pcorrupt, or valor_corrupt
-data$valor_corrupt <- ifelse(data$valor_corrupt > 0, 1, 0)
-data$ncorrupt_os <- ifelse(data$ncorrupt_os > 0, 1, 0)
-data$pcorrupt <- ifelse(data$pcorrupt > 0, 1, 0)
-
-print("Checking inputs to glm:")
-print(head(data))
-print(colnames(data))
-
-# Fit the logistic regression model and change the formula to represent the selected formula
-propensity_model <- glm(
-  formula = formula_used, 
-  data = data, 
-  family = binomial(link = "logit")
+state_fe <- paste0("uf_d", 1:26)
+cov_sets <- list(
+  mayoral          = c("pref_idade_tse", "pref_escola"),
+  mayoral_muni     = c("pref_idade_tse", "pref_escola", "mun_novo", "p_secundario",
+                       "purb", "lpib02", "gini_ipea", "op_01_04"),
+  mayoral_muni_pol = c("pref_idade_tse", "pref_escola", "mun_novo", "p_secundario",
+                       "purb", "lpib02", "gini_ipea", "op_01_04",
+                       "p_cad_pref", "ENLP2000"),
+  selected_cov     = c("pref_idade_tse", "pref_escola", "mun_novo", "p_secundario",
+                       "purb", "lpib02", "gini_ipea", "op_01_04",
+                       "p_cad_pref", "ENLP2000", state_fe)
 )
+covariates   <- cov_sets[[spec]]
+formula_used <- reformulate(c(treatment, covariates), response = outcome)
 
-# Summarize the logistic regression model
-summary(propensity_model)
+# Binarize the chosen outcome BEFORE building the modeling frame, so the SAME
+# 0/1 outcome flows into both the propensity plot and the DML estimators.
+if (binarize) data[[outcome]] <- as.integer(data[[outcome]] > 0)
 
-# Calculate propensity scores and add them to the dataset
-data$propensity_score <- predict(propensity_model, type = "response")
-
-# View the first few rows of the updated dataset
-head(data)
-
-# Plot the distribution of propensity scores (Change the corruption measure in fill = as.factor(pcorrupt))) and fill = "Treatment (pcorrupt)"
-hist_plot <- ggplot(data, aes(x = propensity_score, fill = as.factor(ncorrupt_os))) +
-  geom_histogram(bins = 30, alpha = 0.5, position = "identity") +
-  labs(
-    title = "Histogram of Propensity Scores",
-    x = "Propensity Score",
-    y = "Count",
-    fill = "Treatment (ncorrupt_os)"
-  )
-
-print(hist_plot)
-
+# Modeling frame: outcome + treatment + covariates, with numeric NAs mean-imputed.
+model_val <- as.data.frame(model.frame(formula_used, data))
+model_val[] <- lapply(model_val, function(col) {
+  if (is.numeric(col)) col[is.na(col)] <- mean(col, na.rm = TRUE)
+  col
+})
+x_val <- setdiff(colnames(model_val), c(outcome, treatment))
 ```
 
-```{r}
-# Function to fit a specified machine learning model
+```{r propensity-plot}
+# A propensity model is P(treatment = 1 | X) -- treatment regressed on covariates
+# (the earlier version regressed the OUTCOME on treatment + X, which is not a
+# propensity score). This chunk is exploratory; the DML functions estimate their
+# own m(X) internally via cross-fitting.
+prop_formula     <- reformulate(covariates, response = treatment)
+propensity_model <- glm(prop_formula, data = model_val,
+                        family = binomial(link = "logit"))
+model_val$propensity_score <- predict(propensity_model, type = "response")
+
+model_val$treatment_f <- factor(model_val[[treatment]],
+                                levels = c(0, 1),
+                                labels = c("Second-term", "First-term"))
+
+ggplot(model_val, aes(x = propensity_score, fill = treatment_f)) +
+  geom_histogram(bins = 30, alpha = 0.5, position = "identity") +
+  labs(title = "Propensity score distribution by treatment",
+       x = "Propensity score  P(first-term = 1 | X)", y = "Count",
+       fill = NULL)
+```
+
+```{r learners}
+# Fit a specified ML model. For nnet, the imputation + standardization params are
+# computed on the TRAINING data and stored on the model, so prediction applies the
+# identical transform (the previous version re-scaled the test fold on its own
+# stats -> a train/test mismatch that made the nnet fits unreliable).
 fit_model <- function(X, Y, model_type = "lasso", ...) {
+  X <- as.matrix(X)
   if (model_type == "lasso") {
-    return(cv.glmnet(X, Y, alpha = 1, family = "gaussian"))
+    nf <- max(3, min(10, floor(nrow(X) / 10)))  # robust to small subsets (IRM arms)
+    return(cv.glmnet(X, Y, alpha = 1, family = "gaussian", nfolds = nf))
   } else if (model_type == "rf") {
     return(randomForest(x = X, y = Y, ...))
   } else if (model_type == "tree") {
     return(rpart(Y ~ ., data = data.frame(X, Y = Y)))
   } else if (model_type == "nnet") {
-    # Handle missing values in X
-    X[is.na(X)] <- apply(X, 2, mean, na.rm = TRUE)
-    X_scaled <- scale(X)  # Scale predictors
-    return(nnet(X_scaled, Y, size = 5, linout = TRUE, trace = FALSE, ...))
+    centers <- colMeans(X, na.rm = TRUE)
+    X_imp   <- sweep(X, 2, centers, "-")         # center on training means
+    X_imp[is.na(X_imp)] <- 0                      # NA -> centered mean (0)
+    scales  <- apply(X_imp, 2, sd)
+    scales[scales == 0 | is.na(scales)] <- 1      # guard constant columns
+    X_scaled <- sweep(X_imp, 2, scales, "/")
+    model <- nnet(X_scaled, Y, size = 5, decay = 1e-2, linout = TRUE,
+                  trace = FALSE, maxit = 300, ...)  # decay stabilizes the fit
+    attr(model, "prep") <- list(center = centers, scale = scales)
+    return(model)
   } else {
     stop("Unsupported model type")
   }
 }
 
-# Function to predict using a fitted model
+# Predict with a fitted model, applying the model's stored training transform.
 predict_model <- function(model, X_new, model_type = "lasso") {
-  # Handle missing values in X_new
-  if (any(is.na(X_new))) {
-    print("Imputing missing values in X_new...")
-    X_new[is.na(X_new)] <- apply(X_new, 2, mean, na.rm = TRUE)
-  }
-  
+  X_new <- as.matrix(X_new)
   if (model_type == "lasso") {
     return(as.vector(predict(model, newx = X_new, s = "lambda.min")))
   } else if (model_type %in% c("rf", "tree")) {
+    if (any(is.na(X_new))) {                       # per-column mean imputation
+      cm <- colMeans(X_new, na.rm = TRUE)
+      for (j in seq_len(ncol(X_new))) X_new[is.na(X_new[, j]), j] <- cm[j]
+    }
     return(predict(model, newdata = data.frame(X_new)))
   } else if (model_type == "nnet") {
-    # Scale predictors
-    X_new_scaled <- scale(X_new)
-    
-    # Check for missing values after scaling
-    if (any(is.na(X_new_scaled))) {
-      print("Error: X_new_scaled contains missing values after scaling.")
-      X_new_scaled[is.na(X_new_scaled)] <- 0  # Replace NAs with 0 as a fallback
-    }
-    
-    return(as.vector(predict(model, newdata = X_new_scaled)))
-   } else {
+    prep    <- attr(model, "prep")                 # TRAINING center/scale
+    X_imp   <- sweep(X_new, 2, prep$center, "-")
+    X_imp[is.na(X_imp)] <- 0
+    X_scaled <- sweep(X_imp, 2, prep$scale, "/")
+    return(as.vector(predict(model, newdata = X_scaled)))
+  } else {
     stop("Unsupported model type")
   }
 }
 ```
 
-```{r}
-# Custom Double Machine Learning Function for IRM
-double_ml_irm <- function(data, y_col, d_col, x_cols, z_col = NULL, k = 5, 
-                          model_g = "lasso", model_m = "lasso", trimming_threshold = 1e-2) {
- if (!all(c(y_col, d_col, x_cols) %in% colnames(data))) {
+```{r dml-plr}
+# Partially Linear Regression: theta from regressing outcome residuals on
+# treatment residuals (assumes an additively separable treatment effect).
+double_ml_plr <- function(data, y_col, d_col, x_cols, k = 5,
+                          model_g = "lasso", model_m = "lasso") {
+  if (!all(c(y_col, d_col, x_cols) %in% colnames(data)))
     stop("One or more specified columns are missing in the data.")
-  }
-  
-  # Extract variables
-  Y <- as.matrix(data[[y_col]])
-  D <- as.matrix(data[[d_col]])
-  X <- as.matrix(data[x_cols])
-
-  # Ensure no NULL or NA entries
-  if (is.null(Y) || is.null(D) || is.null(X)) {
-    stop("One or more inputs (Y, D, or X) are NULL.")
-  }
-   # Convert data to data frame if it is a data.table
   if (inherits(data, "data.table")) data <- as.data.frame(data)
-  
-  Z <- if (!is.null(z_col)) as.matrix(data[[z_col]]) else NULL
-  n <- nrow(data)
-  
-  # Create cross-validation folds
-  set.seed(123)
-  folds <- createFolds(Y, k = k, list = TRUE)
-  
-  # Initialize storage for predictions
-  g_hat <- rep(NA, n)
-  m_hat <- rep(NA, n)
-  prop_scores <- rep(NA, n)  # Store propensity scores for trimming
-  
-  # Cross-fitting
-  for (fold in 1:k) {
-    # Split data into training and test sets
-    test_idx <- folds[[fold]]
-    train_idx <- setdiff(1:n, test_idx)
-    
-    X_train <- X[train_idx, ]
-    Y_train <- Y[train_idx]
-    D_train <- D[train_idx]
-    X_test <- X[test_idx, ]
-    
-    # Combine Z and X if Z is provided, otherwise use X only
-    if (!is.null(Z)) {
-      Z_train <- Z[train_idx, ]
-      Z_test <- Z[test_idx, ]
-      XZ_train <- cbind(Z_train, X_train)
-      XZ_test <- cbind(Z_test, X_test)
-    } else {
-      XZ_train <- X_train
-      XZ_test <- X_test
-    }
-    
-    # Fit and predict outcome model (g(X))
-    g_model <- fit_model(X_train, Y_train, model_g)
-    g_hat[test_idx] <- predict_model(g_model, X_test, model_g)
-    
-    # Fit and predict treatment model (m(Z, X) or m(X))
-    m_model <- fit_model(XZ_train, D_train, model_m)
-    m_hat[test_idx] <- predict_model(m_model, XZ_test, model_m)
-    
-    # Calculate propensity scores (for trimming)
-    prop_scores[test_idx] <- m_hat[test_idx]
-  }
-  
-  # Trim based on propensity scores
-  trim_mask <- prop_scores > trimming_threshold & prop_scores < (1 - trimming_threshold)
-  if (sum(trim_mask) == 0) stop("No observations left after trimming. Adjust the trimming threshold.")
-  
-  # Residual of Y and D using trimmed data
-  u_Y <- (Y - g_hat)[trim_mask]
-  u_D <- (D - m_hat)[trim_mask]
-  
-  # Estimate causal effect
-  theta_model <- lm(u_Y ~ u_D - 1)
-  theta <- coef(theta_model)[1]
-  
-  # Robust standard errors
-  residuals <- theta_model$residuals
-  X_residual <- as.matrix(cbind(u_D))
-  bread <- solve(t(X_residual) %*% X_residual)
-  meat <- t(X_residual) %*% diag(residuals^2) %*% X_residual
-  sandwich <- bread %*% meat %*% bread
-  std_error <- sqrt(diag(sandwich))[1]
-  
-  # t-value and p-value
-  t_value <- theta / std_error
-  p_value <- 2 * (1 - pt(abs(t_value), df = sum(trim_mask) - 1))
-  
-  # MSE and RMSE for models (on trimmed data)
-  mse_g <- mean((Y[trim_mask] - g_hat[trim_mask])^2)
-  mse_m <- mean((D[trim_mask] - m_hat[trim_mask])^2)
-  rmse_g <- sqrt(mse_g)
-  rmse_m <- sqrt(mse_m)
-  
-  # Compile results
-  results <- list(
-    theta = theta,
-    std_error = std_error,
-    t_value = t_value,
-    p_value = p_value,
-    rmse_g = rmse_g,
-    rmse_m = rmse_m,
-    trimmed_n = sum(trim_mask),  # Number of observations after trimming
-    trimming_threshold = trimming_threshold
-  )
-  return(results)
-}
-```
 
-```{r}
-# Custom Double Machine Learning Function for PLR
-double_ml_plr <- function(data, y_col, d_col, x_cols, k = 5, model_g = "lasso", model_m = "lasso") {
-  if (!all(c(y_col, d_col, x_cols) %in% colnames(data))) {
-    stop("One or more specified columns are missing in the data.")
-  }
-  
-  # Extract variables
-  Y <- as.matrix(data[[y_col]])
-  D <- as.matrix(data[[d_col]])
-  X <- as.matrix(data[x_cols])
-
-  # Ensure no NULL or NA entries
-  if (is.null(Y) || is.null(D) || is.null(X)) {
-    stop("One or more inputs (Y, D, or X) are NULL.")
-  }
-  # Convert data to data frame if it is a data.table
-  if (inherits(data, "data.table")) data <- as.data.frame(data)
-  
-  # Extract variables
-  Y <- as.matrix(data[[y_col]])
-  D <- as.matrix(data[[d_col]])
+  Y <- as.numeric(data[[y_col]])
+  D <- as.numeric(data[[d_col]])
   X <- as.matrix(data[x_cols])
   n <- nrow(data)
-  
-  # Create cross-validation folds
+
   set.seed(123)
   folds <- createFolds(Y, k = k, list = TRUE)
-  
-  # Initialize storage for predictions
-  g_hat <- rep(NA, n)
-  m_hat <- rep(NA, n)
-  
-  # Cross-fitting
-  for (fold in 1:k) {
-    # Split data into training and test sets
-    test_idx <- folds[[fold]]
-    train_idx <- setdiff(1:n, test_idx)
-    
-    X_train <- X[train_idx, ]
-    Y_train <- Y[train_idx]
-    D_train <- D[train_idx]
-    X_test <- X[test_idx, ]
-    
-    # Fit and predict outcome model (g(X))
-    g_model <- fit_model(X_train, Y_train, model_g)
+
+  g_hat <- rep(NA_real_, n)   # E[Y | X]
+  m_hat <- rep(NA_real_, n)   # E[D | X]
+
+  for (fold in seq_len(k)) {
+    test_idx  <- folds[[fold]]
+    train_idx <- setdiff(seq_len(n), test_idx)
+    X_train <- X[train_idx, , drop = FALSE]
+    X_test  <- X[test_idx, , drop = FALSE]
+
+    g_model <- fit_model(X_train, Y[train_idx], model_g)
     g_hat[test_idx] <- predict_model(g_model, X_test, model_g)
-    
-    # Fit and predict treatment model (m(X))
-    m_model <- fit_model(X_train, D_train, model_m)
+
+    m_model <- fit_model(X_train, D[train_idx], model_m)
     m_hat[test_idx] <- predict_model(m_model, X_test, model_m)
   }
-  
-  # Residual Y and D
+
   u_Y <- Y - g_hat
   u_D <- D - m_hat
-  
-  # Estimate causal effect
+
   theta_model <- lm(u_Y ~ u_D - 1)
-  theta <- coef(theta_model)[1]
-  
-  # Robust standard errors
-  residuals <- theta_model$residuals
-  X_residual <- as.matrix(cbind(u_D))
-  bread <- solve(t(X_residual) %*% X_residual)
-  meat <- t(X_residual) %*% diag(residuals^2) %*% X_residual
-  sandwich <- bread %*% meat %*% bread
-  std_error <- sqrt(diag(sandwich))[1]
-  
-  # t-value and p-value
+  theta <- coef(theta_model)[[1]]
+
+  # heteroskedasticity-robust (HC0) SE, computed without an n x n matrix
+  r  <- residuals(theta_model)
+  bread <- solve(crossprod(u_D))                 # (u_D' u_D)^-1
+  meat  <- crossprod(u_D * r)                     # u_D' diag(r^2) u_D
+  std_error <- sqrt(as.numeric(bread %*% meat %*% bread))
+
   t_value <- theta / std_error
   p_value <- 2 * (1 - pt(abs(t_value), df = n - 1))
-  
-  # MSE and RMSE for models
-  mse_g <- mean((Y - g_hat)^2)
-  mse_m <- mean((D - m_hat)^2)
-  rmse_g <- sqrt(mse_g)
-  rmse_m <- sqrt(mse_m)
-  
-  # Compile results
-  results <- list(
-    theta = theta,
-    std_error = std_error,
-    t_value = t_value,
-    p_value = p_value,
-    rmse_g = rmse_g,
-    rmse_m = rmse_m
-  )
-  return(results)
+
+  list(theta = theta, std_error = std_error, t_value = t_value, p_value = p_value,
+       rmse_g = sqrt(mean((Y - g_hat)^2)), rmse_m = sqrt(mean((D - m_hat)^2)))
 }
 ```
 
-```{r}
-# Define the models to evaluate
+```{r dml-irm}
+# Interactive Regression Model: the outcome model is fit SEPARATELY by treatment
+# arm (g1 = E[Y|D=1,X], g0 = E[Y|D=0,X]) and combined with the propensity through
+# the doubly-robust (AIPW) score to estimate the ATE. This is what distinguishes
+# an IRM from a PLR.
+double_ml_irm <- function(data, y_col, d_col, x_cols, k = 5,
+                          model_g = "lasso", model_m = "lasso",
+                          trimming_threshold = 1e-2) {
+  if (!all(c(y_col, d_col, x_cols) %in% colnames(data)))
+    stop("One or more specified columns are missing in the data.")
+  if (inherits(data, "data.table")) data <- as.data.frame(data)
+
+  Y <- as.numeric(data[[y_col]])
+  D <- as.numeric(data[[d_col]])
+  X <- as.matrix(data[x_cols])
+  n <- nrow(data)
+
+  set.seed(123)
+  folds <- createFolds(D, k = k, list = TRUE)     # stratify folds on treatment
+
+  m_hat  <- rep(NA_real_, n)   # E[D | X]        (propensity)
+  g1_hat <- rep(NA_real_, n)   # E[Y | D = 1, X]
+  g0_hat <- rep(NA_real_, n)   # E[Y | D = 0, X]
+
+  for (fold in seq_len(k)) {
+    test_idx  <- folds[[fold]]
+    train_idx <- setdiff(seq_len(n), test_idx)
+    X_train <- X[train_idx, , drop = FALSE]
+    X_test  <- X[test_idx, , drop = FALSE]
+    D_train <- D[train_idx]
+    Y_train <- Y[train_idx]
+
+    m_model <- fit_model(X_train, D_train, model_m)         # propensity on all train
+    m_hat[test_idx] <- predict_model(m_model, X_test, model_m)
+
+    treated <- which(D_train == 1)                          # outcome models by arm
+    control <- which(D_train == 0)
+    g1_model <- fit_model(X_train[treated, , drop = FALSE], Y_train[treated], model_g)
+    g0_model <- fit_model(X_train[control, , drop = FALSE], Y_train[control], model_g)
+    g1_hat[test_idx] <- predict_model(g1_model, X_test, model_g)
+    g0_hat[test_idx] <- predict_model(g0_model, X_test, model_g)
+  }
+
+  keep <- which(m_hat > trimming_threshold & m_hat < 1 - trimming_threshold)
+  if (length(keep) == 0) stop("No observations left after trimming.")
+  Yk <- Y[keep]; Dk <- D[keep]
+  mk <- m_hat[keep]; g1k <- g1_hat[keep]; g0k <- g0_hat[keep]
+
+  # doubly-robust (AIPW) score for the ATE
+  psi <- (g1k - g0k) +
+         Dk * (Yk - g1k) / mk -
+         (1 - Dk) * (Yk - g0k) / (1 - mk)
+
+  theta     <- mean(psi)
+  n_keep    <- length(keep)
+  std_error <- sqrt(mean((psi - theta)^2) / n_keep)   # orthogonal-score variance
+  t_value   <- theta / std_error
+  p_value   <- 2 * (1 - pt(abs(t_value), df = n_keep - 1))
+
+  g_at_D <- ifelse(Dk == 1, g1k, g0k)
+  list(theta = theta, std_error = std_error, t_value = t_value, p_value = p_value,
+       rmse_g = sqrt(mean((Yk - g_at_D)^2)), rmse_m = sqrt(mean((Dk - mk)^2)),
+       trimmed_n = n_keep, trimming_threshold = trimming_threshold)
+}
+```
+
+```{r run-plr}
 model_types <- c("lasso", "tree", "rf", "nnet")
 
-# Initialize a list to store results
 plr_results <- list()
-
-# Iterate over the model types
 for (model in model_types) {
   cat("Evaluating PLR with", model, "...\n")
-  
-  # Run PLR for the current model type and change y-col to appropriate corruption measure (pcorrupt, ncorrupt_os, or valor_corrupt)
-  results <- tryCatch({
-    double_ml_plr(
-      data = model_val,
-      y_col = "ncorrupt_os",
-      d_col = "first",
-      x_cols = x_val,
-      k = 5,
-      model_g = model,
-      model_m = model
-    )
-  }, error = function(e) {
-    cat("Error evaluating PLR with", model, ":", e$message, "\n")
-    return(NULL)
-  })
-  
-  # Store results in a list
-  if (!is.null(results)) {
+  res <- tryCatch(
+    double_ml_plr(model_val, y_col = outcome, d_col = treatment, x_cols = x_val,
+                  k = 5, model_g = model, model_m = model),
+    error = function(e) { cat("  error:", e$message, "\n"); NULL })
+  if (!is.null(res))
     plr_results[[model]] <- data.frame(
-      model = model,
-      theta = results$theta,
-      std_error = results$std_error,
-      t_value = results$t_value,
-      p_value = results$p_value,
-      rmse_g = results$rmse_g,
-      rmse_m = results$rmse_m
-    )
-  }
+      model = model, theta = res$theta, std_error = res$std_error,
+      t_value = res$t_value, p_value = res$p_value,
+      rmse_g = res$rmse_g, rmse_m = res$rmse_m)
 }
-
-# Combine all results into a single data frame
 plr_results_df <- do.call(rbind, plr_results)
-
-# Print the results as a data frame
-cat("Summary of PLR Results:\n")
-print(plr_results_df)
+cat("\nSummary of PLR results (outcome =", outcome, ", spec =", spec, "):\n")
+print(plr_results_df, row.names = FALSE)
 ```
 
-```{r}
-# Define the models to evaluate
-model_types <- c("lasso", "tree", "rf", "nnet")
-
-# Initialize a list to store results
+```{r run-irm}
 irm_results <- list()
-
-# Iterate over the model types
 for (model in model_types) {
   cat("Evaluating IRM with", model, "...\n")
-  
-  # Run IRM for the current model type and change y-col to appropriate corruption measure (pcorrupt, ncorrupt_os, or valor_corrupt)
-  results <- tryCatch({
-    double_ml_irm(
-      data = model_val,
-      y_col = "ncorrupt_os",
-      d_col = "first",
-      x_cols = x_val,
-      z_col = NULL,  # No instrument
-      k = 5,
-      model_g = model,
-      model_m = model,
-      trimming_threshold = 1e-2  # Apply trimming threshold
-    )
-  }, error = function(e) {
-    cat("Error evaluating IRM with", model, ":", e$message, "\n")
-    return(NULL)
-  })
-  
-  # Store results in a list
-  if (!is.null(results)) {
+  res <- tryCatch(
+    double_ml_irm(model_val, y_col = outcome, d_col = treatment, x_cols = x_val,
+                  k = 5, model_g = model, model_m = model,
+                  trimming_threshold = 1e-2),
+    error = function(e) { cat("  error:", e$message, "\n"); NULL })
+  if (!is.null(res))
     irm_results[[model]] <- data.frame(
-      model = model,
-      theta = results$theta,
-      std_error = results$std_error,
-      t_value = results$t_value,
-      p_value = results$p_value,
-      rmse_g = results$rmse_g,
-      rmse_m = results$rmse_m
-    )
-  }
+      model = model, theta = res$theta, std_error = res$std_error,
+      t_value = res$t_value, p_value = res$p_value,
+      rmse_g = res$rmse_g, rmse_m = res$rmse_m, trimmed_n = res$trimmed_n)
 }
-
-# Combine all results into a single data frame
 irm_results_df <- do.call(rbind, irm_results)
-
-# Print the results as a data frame
-cat("Summary of IRM Results:\n")
-print(irm_results_df)
+cat("\nSummary of IRM results (outcome =", outcome, ", spec =", spec, "):\n")
+print(irm_results_df, row.names = FALSE)
 ```
